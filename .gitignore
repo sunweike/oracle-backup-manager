@@ -1,0 +1,13 @@
+/build/
+/*.zip
+/*.sha256
+*.user
+*.pfx
+*.obm-pair
+*.dmp
+*.par
+*.log
+*.settings
+backup-tasks.xml*
+receiver-identity.bin
+/receivers/

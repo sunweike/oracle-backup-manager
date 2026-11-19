@@ -1,0 +1,5 @@
+7zr.exe is the x86 Windows reduced 7-Zip executable distributed with
+LZMA SDK 26.06 by Igor Pavlov. LZMA SDK is in the public domain.
+
+Official source: https://www.7-zip.org/sdk.html
+7zr.exe SHA-256: e80db2dad715a6c5adabe292d31ed54e11f4e9b99ca349827b50573b175891bc
