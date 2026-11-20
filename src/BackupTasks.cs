@@ -14,7 +14,8 @@ internal sealed class BackupTask
     internal int Port = 1521, Hours = 24;
     internal string ScheduleMode = "interval";
     internal int DailyMinute = 60;
-    internal bool Scheduled, DeleteStaging, Compress = true;
+    internal bool Scheduled, DeleteStaging;
+    internal BackupCompression Compression = BackupCompression.Fast;
     internal DateTime NextUtc = DateTime.MinValue, LastUtc = DateTime.MinValue;
     internal string LastStatus = "";
 
@@ -38,6 +39,7 @@ internal sealed class BackupTask
         if (Port < 1 || Port > 65535 || Hours < 1 || Hours > 720) throw new Exception("端口或备份间隔无效");
         if ((ScheduleMode != "interval" && ScheduleMode != "daily") || DailyMinute < 0 || DailyMinute >= 1440)
             throw new Exception("备份计划无效");
+        if (!Enum.IsDefined(typeof(BackupCompression), Compression)) throw new Exception("压缩等级无效");
     }
 
     internal OracleOptions Options()
@@ -157,6 +159,14 @@ internal sealed class BackupTaskStore
         return ticks == 0 ? DateTime.MinValue : new DateTime(ticks, DateTimeKind.Utc);
     }
 
+    private static BackupCompression ReadCompression(XmlElement element)
+    {
+        if (element.SelectSingleNode("compressionLevel") != null)
+            return (BackupCompression)Number(element, "compressionLevel");
+        // Earlier task files stored the checkbox and always used level 9 when enabled.
+        return Read(element, "compress") == "1" ? BackupCompression.Maximum : BackupCompression.None;
+    }
+
     internal List<BackupTask> Load()
     {
         if (!File.Exists(file)) return null;
@@ -181,7 +191,7 @@ internal sealed class BackupTaskStore
                 DirectoryObject = Read(e, "directory"), Staging = Read(e, "staging"), Bin = Read(e, "bin"),
                 Hours = Number(e, "hours"), Scheduled = Read(e, "scheduled") == "1",
                 ScheduleMode = Read(e, "scheduleMode"), DailyMinute = Number(e, "dailyMinute"),
-                DeleteStaging = Read(e, "deleteStaging") == "1", Compress = Read(e, "compress") == "1",
+                DeleteStaging = Read(e, "deleteStaging") == "1", Compression = ReadCompression(e),
                 NextUtc = Time(e, "nextUtc"), LastUtc = Time(e, "lastUtc"), LastStatus = Read(e, "lastStatus")
             };
             task.ValidateStorage();
@@ -225,7 +235,8 @@ internal sealed class BackupTaskStore
                         Write(writer, "dailyMinute", task.DailyMinute.ToString(CultureInfo.InvariantCulture));
                         Write(writer, "scheduled", task.Scheduled ? "1" : "0");
                         Write(writer, "deleteStaging", task.DeleteStaging ? "1" : "0");
-                        Write(writer, "compress", task.Compress ? "1" : "0");
+                        Write(writer, "compress", task.Compression == BackupCompression.None ? "0" : "1");
+                        Write(writer, "compressionLevel", ((int)task.Compression).ToString(CultureInfo.InvariantCulture));
                         Write(writer, "nextUtc", task.NextUtc.Ticks.ToString(CultureInfo.InvariantCulture));
                         Write(writer, "lastUtc", task.LastUtc.Ticks.ToString(CultureInfo.InvariantCulture));
                         Write(writer, "lastStatus", task.LastStatus);

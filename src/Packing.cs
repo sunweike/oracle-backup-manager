@@ -4,13 +4,33 @@ using System.IO;
 using System.IO.Compression;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.RegularExpressions;
+
+internal enum BackupCompression
+{
+    None = 0,
+    Fast = 3,
+    Balanced = 5,
+    Maximum = 9
+}
 
 internal static class BackupPacking
 {
-    internal static string Prepare(string dump, string id, Action<int> progress, Action<string> log,
-                                   out DumpProof original)
+    private static readonly Regex SevenZipPercent = new Regex(@"^\s*([0-9]{1,3})%(?:\s|$)");
+
+    internal static string Prepare(string dump, string id, BackupCompression level,
+                                   Action<string, int> progress, Action<string> log, out DumpProof original)
     {
         original = null;
+        if (level == BackupCompression.None) return dump;
+        int dictionaryMiB;
+        switch (level)
+        {
+            case BackupCompression.Fast: dictionaryMiB = 4; break;
+            case BackupCompression.Balanced: dictionaryMiB = 16; break;
+            case BackupCompression.Maximum: dictionaryMiB = 32; break;
+            default: throw new ArgumentOutOfRangeException("level", "压缩等级无效");
+        }
         string entryName = id + ".dmp";
         if (!Wire.IdPattern.IsMatch(id) || Path.GetFileName(dump) != entryName)
             throw new IOException("导出文件名与备份编号不一致");
@@ -24,11 +44,19 @@ internal static class BackupPacking
                 long length = input.Length;
                 if (length <= 0 || length > Wire.MaxFile) throw new IOException("导出文件大小无效");
                 log("正在计算原始导出文件的 SHA-256。");
-                byte[] hash = HashDump(input, Stream.Null, length, progress);
-                log("正在使用 7z 高压缩模式。");
-                if (progress != null) progress(0);
-                Run7z("a -t7z -m0=LZMA2 -mx=9 -md=32m -mmt=2", Quote(archive) + " " + Quote(dump),
-                      delegate(Stream output) { output.CopyTo(Stream.Null); });
+                const string hashing = "计算 SHA-256", packing = "7z 压缩";
+                if (progress != null) progress(hashing, 0);
+                byte[] hash = HashDump(input, Stream.Null, length,
+                    progress == null ? (Action<int>)null : percent => progress(hashing, percent));
+                log("开始 7z 压缩，等级 " + (int)level + "，原始文件 " + Wire.FormatSize(length) + "。");
+                if (progress != null) progress(packing, 0);
+                Run7z("a -t7z -m0=LZMA2 -mx=" + (int)level + " -md=" + dictionaryMiB + "m -mmt=2",
+                      Quote(archive) + " " + Quote(dump), delegate(Stream output)
+                      {
+                          if (progress == null) output.CopyTo(Stream.Null);
+                          else ReadCompressionProgress(output, percent => progress(packing, percent));
+                      }, progress != null);
+                if (progress != null) progress(packing, 100);
                 long packedLength = new FileInfo(archive).Length;
                 if (packedLength >= length)
                 {
@@ -145,7 +173,26 @@ internal static class BackupPacking
 
     private static string Quote(string path) { return "\"" + Path.GetFullPath(path) + "\""; }
 
-    private static void Run7z(string operation, string files, Action<Stream> readOutput)
+    private static void ReadCompressionProgress(Stream output, Action<int> progress)
+    {
+        // 7zr redraws its progress with carriage returns when stdout is redirected.
+        using (StreamReader reader = new StreamReader(output, Encoding.UTF8, false, 4096, true))
+        {
+            string line;
+            int previous = 0;
+            while ((line = reader.ReadLine()) != null)
+            {
+                Match match = SevenZipPercent.Match(line);
+                int percent;
+                if (!match.Success || !Int32.TryParse(match.Groups[1].Value, out percent) ||
+                    percent <= previous || percent >= 100) continue;
+                progress(percent);
+                previous = percent;
+            }
+        }
+    }
+
+    private static void Run7z(string operation, string files, Action<Stream> readOutput, bool showProgress = false)
     {
         string executable = Path.Combine(Path.GetTempPath(), "OracleBackup7z_" + Guid.NewGuid().ToString("N") + ".exe");
         bool created = false;
@@ -161,7 +208,7 @@ internal static class BackupPacking
                 }
             }
             ProcessStartInfo info = new ProcessStartInfo(executable,
-                operation + " -y -bso0 -bse2 -bsp0 -sccUTF-8 -- " + files);
+                operation + " -y -bso0 -bse2 " + (showProgress ? "-bsp1" : "-bsp0") + " -sccUTF-8 -- " + files);
             info.UseShellExecute = false;
             info.CreateNoWindow = true;
             info.RedirectStandardInput = true;

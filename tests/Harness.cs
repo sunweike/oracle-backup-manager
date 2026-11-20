@@ -140,12 +140,19 @@ internal static class Harness
         BackupTask secondTask = BackupTask.NewTask("task two");
         firstTask.Password = "TASK_ONE_SECRET"; secondTask.Password = "TASK_TWO_SECRET";
         firstTask.Server = secondTask.Server = "127.0.0.1";
+        secondTask.Compression = BackupCompression.None;
         firstTask.Scheduled = secondTask.Scheduled = true;
         firstTask.NextUtc = DateTime.UtcNow.AddMinutes(-10);
         secondTask.NextUtc = DateTime.UtcNow.AddMinutes(-1);
         BackupTaskStore taskStore = new BackupTaskStore(Path.Combine(temp, "task-settings"));
         taskStore.Save(new List<BackupTask> { firstTask, secondTask });
+        string savedSettings = File.ReadAllText(taskStore.FileName);
+        // Simulate a pre-level settings file with the old compression checkbox.
+        File.WriteAllText(taskStore.FileName, savedSettings.Replace("<compressionLevel>3</compressionLevel>", "")
+                                                          .Replace("<compressionLevel>0</compressionLevel>", ""));
         List<BackupTask> loaded = taskStore.Load();
+        Check(loaded[0].Compression == BackupCompression.Maximum && loaded[1].Compression == BackupCompression.None,
+              "legacy compression settings did not preserve previous behavior");
         Check(loaded.Count == 2 && loaded[0].Password == "TASK_ONE_SECRET" && loaded[1].Password == "TASK_TWO_SECRET",
               "multiple tasks or encrypted passwords did not persist");
         string storedSettings = File.ReadAllText(taskStore.FileName);
@@ -155,10 +162,14 @@ internal static class Harness
         TaskPlanner.Completed(loaded[0], DateTime.UtcNow, true);
         Check(TaskPlanner.NextDue(loaded, DateTime.UtcNow).Id == secondTask.Id, "completed task was not rescheduled");
         loaded[1].ScheduleMode = "daily";
+        loaded[0].Compression = BackupCompression.Balanced;
         DateTime dailyNext = TaskPlanner.Following(loaded[1], DateTime.UtcNow);
         Check(dailyNext > DateTime.UtcNow && dailyNext < DateTime.UtcNow.AddHours(26), "daily schedule invalid");
         taskStore.Save(loaded);
-        Check(taskStore.Load()[1].ScheduleMode == "daily", "updated schedule did not persist");
+        loaded = taskStore.Load();
+        Check(loaded[1].ScheduleMode == "daily", "updated schedule did not persist");
+        Check(loaded[0].Compression == BackupCompression.Balanced && loaded[1].Compression == BackupCompression.None,
+              "per-job compression levels did not persist");
         string lockFolder = Path.Combine(temp, "lock-test");
         using (ClientInstanceLock firstLock = new ClientInstanceLock(lockFolder))
         {
@@ -168,7 +179,7 @@ internal static class Harness
             Check(duplicateBlocked, "second client instance was allowed");
         }
         using (ClientInstanceLock reopened = new ClientInstanceLock(lockFolder)) { }
-        Console.WriteLine("PASS multi-task scheduling, restart persistence and Windows DPAPI round trip");
+        Console.WriteLine("PASS multi-task scheduling, compression migration, restart persistence and Windows DPAPI round trip");
         Console.WriteLine("PASS concurrent clients using the same Windows profile are blocked");
 
         string packingRoot = Path.Combine(temp, "压缩 文件");
@@ -180,7 +191,20 @@ internal static class Harness
         for (int i = 0; i < repeated.Length; i++) repeated[i] = (byte)('A' + i % 13);
         File.WriteAllBytes(largeDump, repeated);
         DumpProof original;
-        string archive = BackupPacking.Prepare(largeDump, packingId, null, delegate(string s) { }, out original);
+        foreach (BackupCompression level in new[] { BackupCompression.Fast, BackupCompression.Maximum })
+        {
+            DumpProof proof;
+            string packed = BackupPacking.Prepare(largeDump, packingId, level, null, delegate(string s) { }, out proof);
+            Check(proof != null && new FileInfo(packed).Length < repeated.Length, "7z level did not produce a smaller file");
+            BackupPacking.Verify(packed, compressedId, proof, null);
+            File.Delete(packed);
+        }
+        string lastStage = "";
+        int stagePercent = -1;
+        string archive = BackupPacking.Prepare(largeDump, packingId, BackupCompression.Balanced,
+            delegate(string stage, int percent) { lastStage = stage; stagePercent = percent; },
+            delegate(string s) { }, out original);
+        Check(lastStage == "7z 压缩" && stagePercent == 100, "compression progress did not report completion");
         byte[] archiveBytes = File.ReadAllBytes(archive);
         Check(original != null && original.Length == repeated.Length && archiveBytes.Length < repeated.Length &&
               archiveBytes[0] == 0x37 && archiveBytes[1] == 0x7a, "expected 7z archive");
@@ -207,7 +231,8 @@ internal static class Harness
             rng.GetBytes(noise);
         File.WriteAllBytes(incompressible, noise);
         DumpProof fallbackProof;
-        string fallback = BackupPacking.Prepare(incompressible, randomId, null, delegate(string s) { }, out fallbackProof);
+        string fallback = BackupPacking.Prepare(incompressible, randomId, BackupCompression.Fast,
+            null, delegate(string s) { }, out fallbackProof);
         Check(fallbackProof == null && fallback == incompressible, "ineffective compression did not retain original");
         Check(Directory.GetFiles(temp, "OracleBackup7z_*.exe").Length == 0, "7z executable was left in TEMP");
 

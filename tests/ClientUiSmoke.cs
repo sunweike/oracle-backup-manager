@@ -46,11 +46,16 @@ internal static class ClientUiSmoke
                 form.ShowInTaskbar = false; form.StartPosition = FormStartPosition.Manual; form.Location = new Point(-20000, -20000);
                 form.Show(); Application.DoEvents();
                 ListView list = Field<ListView>(form, "taskList");
+                ComboBox compression = Field<ComboBox>(form, "compression");
                 Check(list.Items.Count == 2 && list.SelectedItems.Count == 1, "task list did not initialize");
+                Check(compression.Text == "快速（3）", "new tasks did not default to Fast");
+                compression.SelectedIndex = 2;
                 Field<TextBox>(form, "taskName").Text = "First edited";
                 list.Items[1].Selected = true; Application.DoEvents();
                 Check((string)list.SelectedItems[0].Tag == second.Id, "selection did not change");
                 Check(store.Load()[0].Name == "First edited", "switching did not persist edits");
+                Check(store.Load()[0].Compression == BackupCompression.Balanced && compression.Text == "快速（3）",
+                      "switching tasks did not preserve independent compression choices");
                 Field<Button>(form, "addTask").PerformClick(); Application.DoEvents();
                 Check(list.Items.Count == 3 && store.Load().Count == 3, "adding task failed");
                 Field<TextBox>(form, "server").Text = "127.0.0.1";
@@ -90,6 +95,7 @@ internal static class ClientUiSmoke
             BackupTask scheduledTwo = BackupTask.NewTask("Scheduled two");
             scheduledOne.DeleteStaging = true;
             scheduledTwo.Service = "TEST_ORCL2";
+            scheduledTwo.Compression = BackupCompression.None;
             foreach (BackupTask task in new BackupTask[] { scheduledOne, scheduledTwo })
             {
                 task.Server = task.Host = "127.0.0.1";
@@ -120,13 +126,13 @@ internal static class ClientUiSmoke
                         return current[0].LastStatus == "成功" && current[1].LastStatus == "成功";
                     }, "scheduled tasks did not both succeed");
                     List<BackupRecord> delivered = receiver.GetRecords();
-                    Check(delivered.Count == 2 && delivered.TrueForAll(delegate(BackupRecord item)
-                    {
-                        return Wire.IsSevenZip(item.Id) && item.DumpSize < item.Original.Length;
-                    }), "scheduled tasks did not both deliver smaller verified 7z archives");
+                    Check(delivered.Count == 2 &&
+                          delivered.Exists(item => Wire.IsSevenZip(item.Id) && item.DumpSize < item.Original.Length) &&
+                          delivered.Exists(item => !Wire.IsCompressed(item.Id) && item.DumpSize == new FileInfo(sample).Length),
+                          "scheduled tasks did not deliver both the selected 7z and raw DMP formats");
                     Check(Directory.GetFiles(staging, "*.dmp").Length == 1 &&
                           Directory.GetFiles(staging, "*.7z").Length == 0, "staging cleanup was incorrect");
-                    Console.WriteLine("PASS two scheduled UI tasks delivered verified 7z archives over TLS");
+                    Console.WriteLine("PASS scheduled UI tasks used their chosen compression levels and delivered 7z and DMP over TLS");
 
                     ListView records = Field<ListView>(form, "records");
                     Button refresh = Field<Button>(form, "refresh");
@@ -134,8 +140,11 @@ internal static class ClientUiSmoke
                     refresh.PerformClick();
                     WaitFor(delegate { return records.Items.Count == 2 && refresh.Enabled; },
                             "refresh did not show both archives");
-                    Check(records.Items[0].SubItems[2].Text == "7z", "UI did not display the archive format");
-                    records.Items[0].Selected = true;
+                    ListViewItem compressed = null;
+                    foreach (ListViewItem item in records.Items)
+                        if (item.SubItems[2].Text == "7z") compressed = item;
+                    Check(compressed != null, "UI did not display the archive format");
+                    compressed.Selected = true;
                     Field<TextBox>(form, "target").Text = "TEST_EMPTY";
                     Field<TextBox>(form, "admin").Text = "TEST_ADMIN";
                     Field<TextBox>(form, "adminPassword").Text = "TEST_SECRET";
@@ -146,7 +155,7 @@ internal static class ClientUiSmoke
                     Check(Directory.GetFiles(staging, "RESTORE_*.log").Length == 1 &&
                           Directory.GetFiles(staging, "*_RESTORE_*.dmp").Length == 0, "restore cleanup was incorrect");
 
-                    string recordId = records.Items[0].Text;
+                    string recordId = compressed.Text;
                     string manifest = Path.Combine(destination, "OracleBackupSets", recordId, "manifest.txt");
                     string original = File.ReadAllText(manifest);
                     string broken = Regex.Replace(original, "original_sha256=[A-F0-9]{64}",

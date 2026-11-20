@@ -8,20 +8,24 @@ using System.Windows.Forms;
 
 internal sealed class ClientForm : Form
 {
+    private static readonly BackupCompression[] CompressionLevels = {
+        BackupCompression.None, BackupCompression.Fast, BackupCompression.Balanced, BackupCompression.Maximum
+    };
     private readonly TextBox taskName = new TextBox(), server = new TextBox(), dbHost = new TextBox(),
         dbPort = new TextBox(), service = new TextBox(), user = new TextBox(), password = new TextBox(),
         schema = new TextBox(), directory = new TextBox(), staging = new TextBox(), oracleBin = new TextBox(),
         target = new TextBox(), admin = new TextBox(), adminPassword = new TextBox();
     private readonly Button addTask = new Button(), saveTask = new Button(), deleteTask = new Button(),
         backup = new Button(), refresh = new Button(), restore = new Button(), importPair = new Button();
-    private readonly CheckBox auto = new CheckBox(), deleteStaging = new CheckBox(), compress = new CheckBox();
+    private readonly CheckBox auto = new CheckBox(), deleteStaging = new CheckBox();
     private readonly NumericUpDown interval = new NumericUpDown();
-    private readonly ComboBox scheduleMode = new ComboBox();
+    private readonly ComboBox scheduleMode = new ComboBox(), compression = new ComboBox();
     private readonly DateTimePicker dailyTime = new DateTimePicker();
     private readonly ListView taskList = new ListView(), records = new ListView();
     private readonly Label dirtyLabel = new Label();
     private readonly TextBox log = new TextBox();
     private readonly ProgressBar progress = new ProgressBar();
+    private readonly Label progressLabel = Label("就绪");
     private readonly System.Windows.Forms.Timer timer = new System.Windows.Forms.Timer();
     private readonly BackupTaskStore store;
     private readonly List<Control> editControls = new List<Control>();
@@ -127,7 +131,11 @@ internal sealed class ClientForm : Form
         schedule.Controls.Add(new Label { Text = "（客户端需保持运行）", AutoSize = true, Padding = new Padding(0, 5, 0, 0) });
         actions.Controls.Add(schedule, 1, 1); actions.SetColumnSpan(schedule, 3);
         FlowLayoutPanel options = new FlowLayoutPanel { Dock = DockStyle.Fill, WrapContents = false };
-        compress.Text = "高压缩 (7z) 后发送"; compress.AutoSize = true; options.Controls.Add(compress);
+        actions.Controls.Add(Label("7z 压缩等级"), 0, 2);
+        compression.DropDownStyle = ComboBoxStyle.DropDownList;
+        compression.Width = 145;
+        compression.Items.AddRange(new object[] { "不压缩", "快速（3）", "均衡（5）", "最高（9）" });
+        options.Controls.Add(compression);
         deleteStaging.Text = "接收并校验后删除本机导出文件"; deleteStaging.AutoSize = true; options.Controls.Add(deleteStaging);
         actions.Controls.Add(options, 1, 2); actions.SetColumnSpan(options, 3);
 
@@ -161,19 +169,26 @@ internal sealed class ClientForm : Form
         import.Controls.Add(Label("还原到当前任务的数据库；目标账号必须为空，管理员需有导入和查询权限。"), 0, 1);
         import.SetColumnSpan(import.GetControlFromPosition(0, 1), 7);
 
-        progress.Dock = DockStyle.Fill; main.Controls.Add(progress, 0, 5);
+        TableLayoutPanel status = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 1 };
+        status.Margin = new Padding(3, 0, 3, 0);
+        status.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 165));
+        status.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        status.Controls.Add(progressLabel, 0, 0);
+        progress.Dock = DockStyle.Fill;
+        status.Controls.Add(progress, 1, 0);
+        main.Controls.Add(status, 0, 5);
         log.Multiline = true; log.ReadOnly = true; log.ScrollBars = ScrollBars.Vertical;
         log.Dock = DockStyle.Fill; main.Controls.Add(log, 0, 6);
 
         foreach (Control control in new Control[] { taskName, server, dbHost, dbPort, service, user, password, schema,
-                 directory, staging, oracleBin, target, admin, adminPassword, auto, deleteStaging, compress,
+                 directory, staging, oracleBin, target, admin, adminPassword, auto, deleteStaging, compression,
                  interval, scheduleMode, dailyTime, taskList, addTask, saveTask, deleteTask, backup, refresh, restore, importPair })
             editControls.Add(control);
         foreach (TextBox box in new TextBox[] { taskName, server, dbHost, dbPort, service, user, password, schema,
                                                 directory, staging, oracleBin })
             box.TextChanged += delegate { MarkDirty(); };
         auto.CheckedChanged += delegate { MarkDirty(); UpdateScheduleControls(); };
-        compress.CheckedChanged += delegate { MarkDirty(); };
+        compression.SelectedIndexChanged += delegate { MarkDirty(); };
         deleteStaging.CheckedChanged += delegate
         {
             if (!loading && deleteStaging.Checked &&
@@ -240,11 +255,18 @@ internal sealed class ClientForm : Form
         log.AppendText(DateTime.Now.ToString("HH:mm:ss") + "  " + message + Environment.NewLine);
         Preferences.AppendLog("client", message);
     }
-    private void SetProgress(int value)
+    private void SetProgress(string stage, int percent)
     {
         if (IsDisposed) return;
-        if (InvokeRequired) { try { BeginInvoke(new Action<int>(SetProgress), value); } catch { } return; }
-        progress.Value = Math.Max(0, Math.Min(100, value));
+        if (InvokeRequired)
+        {
+            try { BeginInvoke(new Action<string, int>(SetProgress), stage, percent); } catch (InvalidOperationException) { }
+            return;
+        }
+        int value = Math.Min(100, percent);
+        progressLabel.Text = value < 0 ? stage : stage + "  " + value + "%";
+        progress.Style = value < 0 ? ProgressBarStyle.Marquee : ProgressBarStyle.Continuous;
+        if (value >= 0) progress.Value = value;
     }
     private void ShowError(Exception ex) { MessageBox.Show(ex.Message, "操作未完成", MessageBoxButtons.OK, MessageBoxIcon.Warning); }
 
@@ -328,7 +350,8 @@ internal sealed class ClientForm : Form
         staging.Text = selected.Staging; oracleBin.Text = selected.Bin; interval.Value = selected.Hours;
         scheduleMode.SelectedIndex = selected.ScheduleMode == "daily" ? 1 : 0;
         dailyTime.Value = DateTime.Today.AddMinutes(selected.DailyMinute);
-        auto.Checked = selected.Scheduled; deleteStaging.Checked = selected.DeleteStaging; compress.Checked = selected.Compress;
+        auto.Checked = selected.Scheduled; deleteStaging.Checked = selected.DeleteStaging;
+        compression.SelectedIndex = Array.IndexOf(CompressionLevels, selected.Compression);
         dirty = false; dirtyLabel.Text = ""; loading = false;
         UpdateScheduleControls();
     }
@@ -371,7 +394,8 @@ internal sealed class ClientForm : Form
         updated.Staging = staging.Text.Trim(); updated.Bin = oracleBin.Text.Trim();
         updated.Hours = (int)interval.Value; updated.ScheduleMode = scheduleMode.SelectedIndex == 1 ? "daily" : "interval";
         updated.DailyMinute = dailyTime.Value.Hour * 60 + dailyTime.Value.Minute;
-        updated.Scheduled = auto.Checked; updated.DeleteStaging = deleteStaging.Checked; updated.Compress = compress.Checked;
+        updated.Scheduled = auto.Checked; updated.DeleteStaging = deleteStaging.Checked;
+        updated.Compression = CompressionLevels[compression.SelectedIndex];
         updated.ValidateStorage();
         if (updated.Scheduled) updated.Options();
         TaskPlanner.UpdateSchedule(updated, selected, DateTime.UtcNow);
@@ -416,10 +440,10 @@ internal sealed class ClientForm : Form
         foreach (Control control in editControls) control.Enabled = enabled;
         if (enabled) UpdateScheduleControls();
     }
-    private void RunAsync(Action work, Action<Exception> finished)
+    private void RunAsync(string stage, Action work, Action<Exception> finished)
     {
         if (busy) return;
-        busy = true; SetEditing(false); SetProgress(0);
+        busy = true; SetEditing(false); SetProgress(stage, -1);
         Thread thread = new Thread(delegate()
         {
             Exception failure = null;
@@ -432,6 +456,9 @@ internal sealed class ClientForm : Form
                     BeginInvoke(new Action(delegate
                     {
                         busy = false; SetEditing(storeReady);
+                        progress.Style = ProgressBarStyle.Continuous;
+                        progress.Value = failure == null ? 100 : 0;
+                        progressLabel.Text = failure == null ? "已完成" : "失败，详见日志";
                         if (finished != null) finished(failure);
                         TryDue();
                     }));
@@ -485,7 +512,7 @@ internal sealed class ClientForm : Form
         }
         AddLog("[" + task.Name + "] " + (scheduled ? "计划开始执行。" : "手动开始执行。"));
         Action<string> taskLog = delegate(string message) { AddLog("[" + task.Name + "] " + message); };
-        RunAsync(delegate
+        RunAsync("导出数据库", delegate
         {
             PairingStore.GetClient(task.Server);
             ExportedSet set = OracleWork.Export(options, taskLog);
@@ -493,12 +520,18 @@ internal sealed class ClientForm : Form
             DumpProof original = null;
             try
             {
-                if (task.Compress) sendFile = BackupPacking.Prepare(set.Dump, set.Id, SetProgress, taskLog, out original);
+                sendFile = BackupPacking.Prepare(set.Dump, set.Id, task.Compression, SetProgress, taskLog, out original);
                 string backupId = set.Id + (original != null ? Wire.SevenZipSuffix : "");
+                string phase = "发送备份";
+                SetProgress(phase, 0);
                 taskLog("开始加密发送到接受端。");
                 BackupNetworkClient.Upload(task.Server, Wire.DefaultPort, backupId, options.Schema,
-                                           sendFile, set.Log, SetProgress, original, taskLog);
-                SetProgress(100);
+                    sendFile, set.Log, percent => SetProgress(phase, percent), original, delegate(string message)
+                    {
+                        taskLog(message);
+                        phase = "接受端校验";
+                        SetProgress(phase, 0);
+                    });
                 taskLog("接受端已校验并保存备份 " + backupId);
                 if (task.DeleteStaging)
                 {
@@ -521,7 +554,7 @@ internal sealed class ClientForm : Form
             string host = selected.Server;
             if (!Regex.IsMatch(host ?? "", @"^[A-Za-z0-9.-]{1,253}$")) throw new Exception("请填写接收端 IP 或主机名");
             List<BackupRecord> result = null;
-            RunAsync(delegate { result = BackupNetworkClient.List(host, Wire.DefaultPort); },
+            RunAsync("读取备份列表", delegate { result = BackupNetworkClient.List(host, Wire.DefaultPort); },
                 delegate(Exception failure)
                 {
                     if (result == null) return;
@@ -563,7 +596,7 @@ internal sealed class ClientForm : Form
             if (!Wire.SchemaPattern.IsMatch(destinationSchema)) throw new Exception("请输入目标空账号");
             if (!confirm("将把 " + record.Schema + " 的备份导入 " + options.Host + "/" + options.Service +
                 " 的空账号 " + destinationSchema + "。程序将检查目标账号。导入会修改数据库，是否继续？")) return;
-            RunAsync(delegate
+            RunAsync("检查目标数据库", delegate
             {
                 PairingStore.GetClient(task.Server);
                 OracleWork.CheckEmptyTarget(options, destinationSchema, AddLog);
@@ -574,10 +607,15 @@ internal sealed class ClientForm : Form
                 try
                 {
                     AddLog("正在下载并校验备份。");
+                    SetProgress("下载备份", 0);
                     DumpProof original = BackupNetworkClient.Download(task.Server, Wire.DefaultPort, record.Id, 1,
-                                                                      downloaded, SetProgress);
-                    BackupPacking.Materialize(downloaded, local, record.Id, original, SetProgress, AddLog);
+                        downloaded, percent => SetProgress("下载备份", percent));
+                    if (Wire.IsCompressed(record.Id)) SetProgress("解压并校验", 0);
+                    BackupPacking.Materialize(downloaded, local, record.Id, original,
+                        percent => SetProgress("解压并校验", percent), AddLog);
+                    SetProgress("检查目标账号", -1);
                     OracleWork.CheckEmptyTarget(options, destinationSchema, AddLog);
+                    SetProgress("导入到目标数据库", -1);
                     string importLog = OracleWork.Restore(options, record.Schema, destinationSchema, local, AddLog);
                     AddLog("导入命令结束。请核对数据及导入日志：" + importLog);
                     try { File.Delete(local); }
