@@ -29,12 +29,14 @@ internal sealed class PairingKeys
     internal bool Trusts(X509Certificate certificate)
     {
         if (certificate == null) return false;
-        using (X509Certificate2 cert = new X509Certificate2(certificate))
+        X509Certificate2 cert = new X509Certificate2(certificate);
+        try
         {
             DateTime now = DateTime.UtcNow;
             return now >= cert.NotBefore.ToUniversalTime() && now <= cert.NotAfter.ToUniversalTime() &&
                 Wire.Equal(Fingerprint(cert), fingerprint);
         }
+        finally { cert.Reset(); }
     }
 
     internal byte[] Encode()
@@ -220,8 +222,9 @@ internal sealed class ReceiverIdentity : IDisposable
                 if (context == IntPtr.Zero) throw new Win32Exception(Marshal.GetLastWin32Error());
                 try
                 {
-                    using (X509Certificate2 certificate = new X509Certificate2(context))
-                        return certificate.Export(X509ContentType.Pfx);
+                    X509Certificate2 certificate = new X509Certificate2(context);
+                    try { return certificate.Export(X509ContentType.Pfx); }
+                    finally { certificate.Reset(); }
                 }
                 finally { CertFreeCertificateContext(context); }
             }
@@ -292,6 +295,7 @@ internal sealed class ReceiverIdentity : IDisposable
     [DllImport("crypt32.dll", ExactSpelling = true)]
     private static extern bool CertFreeCertificateContext(IntPtr context);
 
-    public void Dispose() { Certificate.Dispose(); }
+    // X509Certificate2 only implements IDisposable starting with .NET Framework 4.6.
+    public void Dispose() { Certificate.Reset(); }
 }
 #endif

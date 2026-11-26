@@ -1,4 +1,4 @@
-param([switch]$BuildOnly)
+param([switch]$BuildOnly, [string]$ReferenceAssemblies)
 
 $ErrorActionPreference = 'Stop'
 $csc = Join-Path $env:windir 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
@@ -25,6 +25,17 @@ function Compile {
     param([string[]]$Options)
     $flags = @($Options | Where-Object { $_.StartsWith('/') })
     $files = @($Options | Where-Object { -not $_.StartsWith('/') })
+    if ($ReferenceAssemblies) {
+        $references = @('mscorlib.dll', 'System.dll', 'System.Core.dll')
+        $references += $flags | Where-Object { $_.StartsWith('/reference:') } |
+            ForEach-Object { $_.Substring('/reference:'.Length) }
+        $flags = @($flags | Where-Object { -not $_.StartsWith('/reference:') })
+        $flags += @('/noconfig', '/nostdlib+')
+        $flags += $references | ForEach-Object {
+            $assembly = Join-Path $ReferenceAssemblies $_
+            "/reference:$(Resolve-Path -LiteralPath $assembly)"
+        }
+    }
     & $csc @flags @files
     if ($LASTEXITCODE -ne 0) { throw 'Compiler failed.' }
 }

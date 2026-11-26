@@ -165,6 +165,7 @@ internal sealed class ServerForm : Form
     }
     private void ExportPairing()
     {
+        string step = "打开保存窗口";
         try
         {
             using (SaveFileDialog dialog = new SaveFileDialog())
@@ -173,12 +174,22 @@ internal sealed class ServerForm : Form
                 dialog.Filter = "Oracle 配对文件 (*.obm-pair)|*.obm-pair";
                 dialog.FileName = "OracleBackupManager.obm-pair";
                 if (dialog.ShowDialog(this) != DialogResult.OK) return;
+                step = "读取或生成接收端证书";
                 using (ReceiverIdentity identity = ReceiverIdentity.LoadOrCreate())
+                {
+                    step = "写入配对文件";
                     identity.Keys.Export(dialog.FileName);
+                    step = "释放证书资源";
+                }
                 AddLog("已导出配对文件。请通过可信渠道交给对应的备份端。");
             }
         }
-        catch (Exception ex) { MessageBox.Show(ex.Message, "配对文件导出失败"); }
+        catch (Exception ex)
+        {
+            string detail = step + "失败（" + ex.GetType().Name + "，0x" + ex.HResult.ToString("X8") + "）";
+            AddLog("配对文件导出失败：" + detail);
+            MessageBox.Show(this, detail + Environment.NewLine + ex.Message, "配对文件导出失败");
+        }
     }
     private void StopReceiver()
     {

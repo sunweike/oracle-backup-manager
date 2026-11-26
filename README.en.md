@@ -24,6 +24,8 @@ The desktop interface is in Simplified Chinese. The steps below include the labe
 
 Connection fields start blank. The receiver generates its TLS certificate and connection token locally. Windows DPAPI protects stored pairing details and task passwords under the current Windows account. Both applications keep their settings under `%LOCALAPPDATA%\OracleBackupManager.Standard`. To upgrade from v1.3.0 or v1.4.0, replace both executables and run each under its original Windows account to keep saved jobs and pairing details. If pairing file export previously failed, click **导出配对文件** (Export Pairing File) again after the upgrade. To upgrade from an earlier version with built-in pairing credentials, replace both executables and pair them again.
 
+When upgrading from v1.4.1 to fix pairing file export, replacing `Oracle接受端.exe` (Receiver) is sufficient. If export still fails, the dialog shows the failed step, exception type, and error code.
+
 Database passwords can contain ASCII punctuation such as `@`, `/`, `&`, `!`, and `#`. Enter the password exactly as it is. The application handles quoting for the Oracle tools. The password field accepts 1 to 128 printable ASCII characters, excluding double quotes. The database's own password policy still applies.
 
 ## Daily operation

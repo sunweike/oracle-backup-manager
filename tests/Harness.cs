@@ -282,8 +282,9 @@ internal static class Harness
                   "exported pairing does not match the receiver identity");
             byte[] altered = identity.Certificate.RawData;
             altered[altered.Length - 1] ^= 1;
-            using (X509Certificate2 wrong = new X509Certificate2(altered))
-                Check(!keys.Trusts(wrong), "modified certificate was trusted");
+            X509Certificate2 wrong = new X509Certificate2(altered);
+            try { Check(!keys.Trusts(wrong), "modified certificate was trusted"); }
+            finally { wrong.Reset(); }
         }
         File.Delete(pairPath);
         using (ReceiverIdentity reopenedIdentity = ReceiverIdentity.LoadOrCreate())

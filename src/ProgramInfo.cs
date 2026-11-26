@@ -1,8 +1,8 @@
 using System.Reflection;
 
 [assembly: AssemblyProduct("Oracle备份管理系统")]
-[assembly: AssemblyVersion("1.4.1.0")]
-[assembly: AssemblyFileVersion("1.4.1.0")]
+[assembly: AssemblyVersion("1.4.2.0")]
+[assembly: AssemblyFileVersion("1.4.2.0")]
 
 #if CLIENT_BUILD
 [assembly: AssemblyTitle("Oracle备份端")]
