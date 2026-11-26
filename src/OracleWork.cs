@@ -15,13 +15,16 @@ internal sealed class OracleOptions
 
     internal void Validate()
     {
-        if (!Regex.IsMatch(Host ?? "", @"^[A-Za-z0-9.-]{1,253}$")) throw new Exception("数据库地址无效");
+        if (!Regex.IsMatch(Host ?? "", @"\A[A-Za-z0-9.-]{1,253}\z")) throw new Exception("数据库地址无效");
         if (Port < 1 || Port > 65535) throw new Exception("数据库端口无效");
-        if (!Regex.IsMatch(Service ?? "", @"^[A-Za-z0-9._-]{1,128}$")) throw new Exception("数据库服务名无效");
+        if (!Regex.IsMatch(Service ?? "", @"\A[A-Za-z0-9._-]{1,128}\z")) throw new Exception("数据库服务名无效");
         if (!Wire.SchemaPattern.IsMatch(User ?? "") || !Wire.SchemaPattern.IsMatch(Schema ?? "") ||
             !Wire.SchemaPattern.IsMatch(DirectoryObject ?? "")) throw new Exception("用户名、账号或目录对象无效");
-        if (!Regex.IsMatch(Password ?? "", @"^[A-Za-z0-9_]{1,128}$"))
-            throw new Exception("此版本数据库密码仅支持字母、数字和下划线");
+        if (String.IsNullOrEmpty(Password)) throw new Exception("请输入数据库密码");
+        if (Password.Length > 128) throw new Exception("数据库密码不能超过 128 个字符");
+        foreach (char ch in Password)
+            if (ch < ' ' || ch > '~' || ch == '"')
+                throw new Exception("数据库密码仅支持可打印的 ASCII 字符，不能包含双引号、换行或制表符");
         if (!String.IsNullOrWhiteSpace(Staging)) Staging = NormalizeLocalDirectory(Staging.Trim());
         else Staging = "";
         if (!String.IsNullOrWhiteSpace(Bin)) Bin = Path.GetFullPath(Bin.Trim());
@@ -42,7 +45,12 @@ internal sealed class OracleOptions
     }
     internal string Connect
     {
-        get { return User + "/" + Password + "@//" + Host + ":" + Port + "/" + Service; }
+        get
+        {
+            string quotedPassword = Regex.IsMatch(Password, @"\A[A-Za-z0-9_]+\z")
+                ? Password : "\"" + Password + "\"";
+            return User + "/" + quotedPassword + "@//" + Host + ":" + Port + "/" + Service;
+        }
     }
     internal string Tool(string exe)
     {
@@ -57,7 +65,7 @@ internal sealed class ExportedSet
 
 internal static class OracleWork
 {
-    private static string SecretFile(string contents)
+    private static string WriteParameterFile(string contents)
     {
         string name = Path.Combine(Path.GetTempPath(), "oracle_backup_" + Guid.NewGuid().ToString("N") + ".par");
         FileSecurity acl = new FileSecurity();
@@ -99,8 +107,15 @@ internal static class OracleWork
             if (!process.Start()) throw new Exception("无法启动 " + executable);
             process.BeginOutputReadLine();
             process.BeginErrorReadLine();
-            if (!String.IsNullOrEmpty(input)) process.StandardInput.Write(input);
-            process.StandardInput.Close();
+            try
+            {
+                using (StreamWriter stdin = process.StandardInput)
+                    if (!String.IsNullOrEmpty(input)) stdin.Write(input);
+            }
+            catch (IOException)
+            {
+                // A tool can exit on a parameter error before opening its input. Read its exit code and diagnostics.
+            }
             process.WaitForExit();
             process.WaitForExit();
             return process.ExitCode;
@@ -109,11 +124,12 @@ internal static class OracleWork
 
     private static void RunPump(string tool, OracleOptions options, string parameters, Action<string> log)
     {
-        string par = SecretFile("USERID=" + options.Connect + "\r\n" + parameters);
+        string par = WriteParameterFile(parameters);
         try
         {
             bool fileError = false;
-            int code = RunTool(options.Tool(tool), "parfile=\"" + par + "\"", null,
+            // With USERID omitted, Data Pump reads the complete login string at its username prompt.
+            int code = RunTool(options.Tool(tool), "parfile=\"" + par + "\"", options.Connect + "\r\n",
                                options.Password, delegate(string line)
                                {
                                    if (line.Contains("ORA-29283")) fileError = true;
@@ -140,11 +156,16 @@ internal static class OracleWork
         return String.Equals(actualShort, localShort, StringComparison.OrdinalIgnoreCase);
     }
 
+    private static string SqlPlusLogin(OracleOptions options)
+    {
+        return "WHENEVER OSERROR EXIT FAILURE\r\nWHENEVER SQLERROR EXIT FAILURE\r\n" +
+            "SET DEFINE OFF\r\nCONNECT " + options.Connect + "\r\n";
+    }
+
     private static void CreateDirectoryObject(OracleOptions options, Action<string> log)
     {
         string path = options.Staging.Replace("'", "''");
-        string input = "WHENEVER OSERROR EXIT FAILURE\r\nWHENEVER SQLERROR EXIT FAILURE\r\n" +
-            "CONNECT " + options.Connect + "\r\nSET DEFINE OFF\r\n" +
+        string input = SqlPlusLogin(options) +
             "CREATE DIRECTORY " + options.DirectoryObject + " AS '" + path + "';\r\n" +
             "SELECT 'OBM_DIRECTORY_CREATED' FROM DUAL;\r\nEXIT SUCCESS\r\n";
         List<string> output = new List<string>();
@@ -171,8 +192,7 @@ internal static class OracleWork
     {
         options.Validate();
         const string marker = "OBM_DIRECTORY_PATH=";
-        string input = "WHENEVER OSERROR EXIT FAILURE\r\nWHENEVER SQLERROR EXIT FAILURE\r\n" +
-            "CONNECT " + options.Connect + "\r\n" +
+        string input = SqlPlusLogin(options) +
             "SET PAGESIZE 0\r\nSET HEADING OFF\r\nSET FEEDBACK OFF\r\nSET VERIFY OFF\r\n" +
             "SET TRIMOUT ON\r\nSET LINESIZE 32767\r\nSET TAB OFF\r\n" +
             "SELECT 'OBM_DATABASE_HOST=' || SYS_CONTEXT('USERENV','SERVER_HOST') FROM DUAL;\r\n" +
@@ -286,8 +306,7 @@ internal static class OracleWork
     {
         admin.Validate();
         if (!Wire.SchemaPattern.IsMatch(target ?? "")) throw new Exception("目标账号名无效");
-        string input = "WHENEVER OSERROR EXIT FAILURE\r\nWHENEVER SQLERROR EXIT FAILURE\r\n" +
-            "CONNECT " + admin.Connect + "\r\n" +
+        string input = SqlPlusLogin(admin) +
             "SET PAGESIZE 0\r\nSET HEADING OFF\r\nSET FEEDBACK OFF\r\nSET VERIFY OFF\r\nSET TRIMOUT ON\r\n" +
             "SELECT 'USER_COUNT=' || COUNT(*) FROM DBA_USERS WHERE USERNAME='" + target + "';\r\n" +
             "SELECT 'OBJECT_COUNT=' || COUNT(*) FROM DBA_OBJECTS WHERE OWNER='" + target + "';\r\nEXIT SUCCESS\r\n";

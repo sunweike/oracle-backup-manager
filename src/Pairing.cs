@@ -1,5 +1,7 @@
 using System;
+using System.ComponentModel;
 using System.IO;
+using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using System.Text;
@@ -158,27 +160,137 @@ internal sealed class ReceiverIdentity : IDisposable
 
     private static byte[] Generate()
     {
-        using (RSA rsa = new RSACng(2048))
         using (RandomNumberGenerator random = RandomNumberGenerator.Create())
         {
-            CertificateRequest request = new CertificateRequest("CN=Oracle Backup Manager",
-                rsa, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
-            request.CertificateExtensions.Add(new X509KeyUsageExtension(
-                X509KeyUsageFlags.DigitalSignature | X509KeyUsageFlags.KeyEncipherment, true));
-            request.CertificateExtensions.Add(new X509EnhancedKeyUsageExtension(
-                new OidCollection { new Oid("1.3.6.1.5.5.7.3.1") }, false));
-            DateTimeOffset now = DateTimeOffset.UtcNow;
-            using (X509Certificate2 certificate = request.CreateSelfSigned(now.AddDays(-1), now.AddYears(5)))
+            byte[] token = new byte[32], pfx = CreateServerPfx();
+            random.GetBytes(token);
+            byte[] data = new byte[token.Length + pfx.Length];
+            Buffer.BlockCopy(token, 0, data, 0, token.Length);
+            Buffer.BlockCopy(pfx, 0, data, token.Length, pfx.Length);
+            return data;
+        }
+    }
+
+    private static unsafe byte[] CreateServerPfx()
+    {
+        const int rsaAesProvider = 24; // PROV_RSA_AES
+        const string serverAuthentication = "1.3.6.1.5.5.7.3.1";
+        CspParameters key = new CspParameters(rsaAesProvider);
+        key.KeyContainerName = "OracleBackupManager-" + Guid.NewGuid().ToString("N");
+        key.KeyNumber = (int)KeyNumber.Exchange;
+        key.Flags = CspProviderFlags.NoPrompt;
+
+        // CryptoAPI signs with the temporary CSP key. Export the PFX before disposing the key container.
+        using (RSACryptoServiceProvider rsa = new RSACryptoServiceProvider(2048, key))
+        {
+            rsa.PersistKeyInCsp = false;
+            CspKeyContainerInfo keyInfo = rsa.CspKeyContainerInfo;
+            NativeKeyProvider provider = new NativeKeyProvider {
+                Container = keyInfo.KeyContainerName, Provider = keyInfo.ProviderName,
+                Type = keyInfo.ProviderType, KeySpec = (int)keyInfo.KeyNumber
+            };
+            NativeAlgorithm signature = new NativeAlgorithm { Oid = "1.2.840.113549.1.1.11" }; // sha256WithRSAEncryption
+            byte[] subject = new X500DistinguishedName("CN=Oracle Backup Manager").RawData;
+            X509Extension usage = new X509KeyUsageExtension(
+                X509KeyUsageFlags.DigitalSignature | X509KeyUsageFlags.KeyEncipherment, true);
+            X509Extension enhancedUsage = new X509EnhancedKeyUsageExtension(
+                new OidCollection { new Oid(serverAuthentication) }, false);
+            byte[] usageOid = Encoding.ASCII.GetBytes(usage.Oid.Value + "\0");
+            byte[] enhancedUsageOid = Encoding.ASCII.GetBytes(enhancedUsage.Oid.Value + "\0");
+            byte[] usageValue = usage.RawData, enhancedUsageValue = enhancedUsage.RawData;
+            DateTime now = DateTime.UtcNow;
+            NativeSystemTime start = new NativeSystemTime(now.AddDays(-1));
+            NativeSystemTime end = new NativeSystemTime(now.AddYears(5));
+            fixed (byte* subjectPtr = subject, usageOidPtr = usageOid, enhancedOidPtr = enhancedUsageOid,
+                         usagePtr = usageValue, enhancedPtr = enhancedUsageValue)
             {
-                byte[] token = new byte[32], pfx = certificate.Export(X509ContentType.Pfx);
-                random.GetBytes(token);
-                byte[] data = new byte[token.Length + pfx.Length];
-                Buffer.BlockCopy(token, 0, data, 0, token.Length);
-                Buffer.BlockCopy(pfx, 0, data, token.Length, pfx.Length);
-                return data;
+                NativeBlob name = new NativeBlob { Size = subject.Length, Bytes = subjectPtr };
+                NativeExtension* entries = stackalloc NativeExtension[2];
+                entries[0] = new NativeExtension {
+                    Oid = usageOidPtr, Critical = 1,
+                    Value = new NativeBlob { Size = usageValue.Length, Bytes = usagePtr }
+                };
+                entries[1] = new NativeExtension {
+                    Oid = enhancedOidPtr, Critical = 0,
+                    Value = new NativeBlob { Size = enhancedUsageValue.Length, Bytes = enhancedPtr }
+                };
+                NativeExtensions extensions = new NativeExtensions { Count = 2, Entries = entries };
+                IntPtr context = CertCreateSelfSignCertificate(IntPtr.Zero, ref name, 0, ref provider,
+                    ref signature, ref start, ref end, ref extensions);
+                if (context == IntPtr.Zero) throw new Win32Exception(Marshal.GetLastWin32Error());
+                try
+                {
+                    using (X509Certificate2 certificate = new X509Certificate2(context))
+                        return certificate.Export(X509ContentType.Pfx);
+                }
+                finally { CertFreeCertificateContext(context); }
             }
         }
     }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private unsafe struct NativeBlob
+    {
+        internal int Size;
+        internal byte* Bytes;
+    }
+
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    private struct NativeKeyProvider
+    {
+        internal string Container, Provider;
+        internal int Type, Flags, ParameterCount;
+        internal IntPtr Parameters;
+        internal int KeySpec;
+    }
+
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Ansi)]
+    private struct NativeAlgorithm
+    {
+        internal string Oid;
+        internal NativeBlob Parameters;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private unsafe struct NativeExtension
+    {
+        internal byte* Oid;
+        internal int Critical;
+        internal NativeBlob Value;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private unsafe struct NativeExtensions
+    {
+        internal int Count;
+        internal NativeExtension* Entries;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct NativeSystemTime
+    {
+        private ushort year, month, dayOfWeek, day, hour, minute, second, milliseconds;
+
+        internal NativeSystemTime(DateTime time)
+        {
+            year = (ushort)time.Year;
+            month = (ushort)time.Month;
+            dayOfWeek = (ushort)time.DayOfWeek;
+            day = (ushort)time.Day;
+            hour = (ushort)time.Hour;
+            minute = (ushort)time.Minute;
+            second = (ushort)time.Second;
+            milliseconds = (ushort)time.Millisecond;
+        }
+    }
+
+    [DllImport("crypt32.dll", ExactSpelling = true, SetLastError = true)]
+    private static extern IntPtr CertCreateSelfSignCertificate(IntPtr keyHandle, ref NativeBlob subject,
+        int flags, ref NativeKeyProvider provider, ref NativeAlgorithm signature, ref NativeSystemTime start,
+        ref NativeSystemTime end, ref NativeExtensions extensions);
+
+    [DllImport("crypt32.dll", ExactSpelling = true)]
+    private static extern bool CertFreeCertificateContext(IntPtr context);
 
     public void Dispose() { Certificate.Dispose(); }
 }

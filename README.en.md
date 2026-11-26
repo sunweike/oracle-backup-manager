@@ -22,7 +22,9 @@ The desktop interface is in Simplified Chinese. The steps below include the labe
 3. Open **Backup Client** on the database server. Enter the receiver's IP address or hostname in `接受端 IP`, then click **导入配对** (Import Pairing) and select the file.
 4. Enter the database host, service name, account, password, and schema to back up. Set **Oracle bin** to the Oracle tools folder or add that folder to `PATH`. Click **保存任务** (Save Job), then **备份当前任务** (Run Selected Backup) to test the setup.
 
-Connection fields start blank. The receiver generates its TLS certificate and connection token locally. Windows DPAPI protects stored pairing details and task passwords under the current Windows account. Both applications keep their settings under `%LOCALAPPDATA%\OracleBackupManager.Standard`. To upgrade from v1.3.0, replace the Backup Client and run it under the same Windows account. To upgrade from an earlier version with built-in pairing credentials, replace both executables and pair them again.
+Connection fields start blank. The receiver generates its TLS certificate and connection token locally. Windows DPAPI protects stored pairing details and task passwords under the current Windows account. Both applications keep their settings under `%LOCALAPPDATA%\OracleBackupManager.Standard`. To upgrade from v1.3.0 or v1.4.0, replace both executables and run each under its original Windows account to keep saved jobs and pairing details. If pairing file export previously failed, click **导出配对文件** (Export Pairing File) again after the upgrade. To upgrade from an earlier version with built-in pairing credentials, replace both executables and pair them again.
+
+Database passwords can contain ASCII punctuation such as `@`, `/`, `&`, `!`, and `#`. Enter the password exactly as it is. The application handles quoting for the Oracle tools. The password field accepts 1 to 128 printable ASCII characters, excluding double quotes. The database's own password policy still applies.
 
 ## Daily operation
 

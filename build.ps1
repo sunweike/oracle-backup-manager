@@ -34,7 +34,7 @@ Compile ($base + $client + $forms + @(
     "/win32icon:$assets\Backup.ico", $backupIcon, "$source\ClientForm.cs", "$source\ProgramInfo.cs"
 ))
 Compile ($base + $forms + @(
-    '/target:winexe', '/define:SERVER_BUILD', "/out:$bin\app\$serverName",
+    '/target:winexe', '/unsafe', '/define:SERVER_BUILD', "/out:$bin\app\$serverName",
     "/win32icon:$assets\Receive.ico", $receiveIcon, "$source\ServerForm.cs", "$source\ProgramInfo.cs"
 ))
 if ($BuildOnly) { return }
@@ -45,7 +45,7 @@ foreach ($name in @('impdp.exe', 'sqlplus.exe')) {
     Copy-Item -LiteralPath "$mock\expdp.exe" -Destination "$mock\$name" -Force
 }
 
-$both = $base + $client + @('/target:exe', '/define:SERVER_BUILD,CLIENT_BUILD,TEST_BUILD')
+$both = $base + $client + @('/target:exe', '/unsafe', '/define:SERVER_BUILD,CLIENT_BUILD,TEST_BUILD')
 Compile ($both + @("/out:$bin\test\Harness.exe", "$tests\Harness.cs"))
 Compile ($both + $forms + @(
     '/main:ClientUiSmoke', "/out:$bin\test\ClientUiSmoke.exe", $backupIcon, "$source\ClientForm.cs", "$tests\ClientUiSmoke.cs"

@@ -110,6 +110,17 @@ internal static class Harness
         Check(OracleOptions.NormalizeLocalDirectory(@"C:\") == @"C:\", "drive root changed into a relative path");
         Console.WriteLine("PASS missing, mismatched and failed directory checks block export; missing SQL*Plus explained");
 
+        foreach (string invalidPassword in new string[] { "", "demo\nsecond line", "demo\r", "demo\t", "demo\"", "demo\u5bc6" })
+        {
+            config.Password = invalidPassword;
+            bool invalidPasswordRejected = false;
+            try { config.Validate(); }
+            catch (Exception ex) { invalidPasswordRejected = ex.Message.Contains("密码"); }
+            Check(invalidPasswordRejected, "unsupported password accepted");
+        }
+        const string specialPassword = " Test@/&!#%,=;')\\ ";
+        config.Password = specialPassword;
+        Environment.SetEnvironmentVariable("MOCK_SPECIAL_PASSWORD", specialPassword);
         config.Staging = "";
         OracleWork.CheckDirectory(config, delegate(string s) { logs.Add(s); });
         Check(config.Staging.Equals(staging, StringComparison.OrdinalIgnoreCase), "existing staging path not adopted");
@@ -122,9 +133,11 @@ internal static class Harness
         ExportedSet set = OracleWork.Export(config, delegate(string s) { logs.Add(s); });
         Check(File.Exists(set.Dump) && File.Exists(set.Log), "mock export did not create both files");
         Check(File.Exists(pumpMarker), "matching directory did not reach expdp");
-        Check(logs.TrueForAll(delegate(string s) { return !s.Contains("TEST_SECRET"); }), "secret appeared in logs");
+        Check(logs.Contains("Mock SQL*Plus emitted ********") && logs.Contains("Mock Data Pump emitted ********") &&
+              logs.TrueForAll(delegate(string s) { return !s.Contains("TEST_SECRET") && !s.Contains(specialPassword); }),
+              "Oracle tool output did not redact passwords");
         Check(Directory.GetFiles(temp, "oracle_backup_*.par").Length == 0, "temporary parameter file was not deleted");
-        Console.WriteLine("PASS mocked Oracle export, redaction, parameter-file cleanup");
+        Console.WriteLine("PASS special-character login for mocked SQL*Plus and export, redaction, parameter-file cleanup");
         Environment.SetEnvironmentVariable("MOCK_DIRECTORY_MODE", "match");
         Environment.SetEnvironmentVariable("MOCK_PUMP_ERROR", "file");
         string fileProblem = null;
@@ -260,6 +273,9 @@ internal static class Harness
         string pairPath = Path.Combine(temp, "test.obm-pair");
         using (ReceiverIdentity identity = ReceiverIdentity.LoadOrCreate())
         {
+            Check(identity.Certificate.HasPrivateKey && identity.Certificate.PublicKey.Key.KeySize == 2048 &&
+                  identity.Certificate.SignatureAlgorithm.Value == "1.2.840.113549.1.1.11",
+                  "receiver certificate does not have the expected RSA key and SHA-256 signature");
             identity.Keys.Export(pairPath);
             keys = PairingKeys.Import(pairPath);
             Check(Wire.Equal(keys.Token, identity.Keys.Token) && keys.Trusts(identity.Certificate),
@@ -359,10 +375,14 @@ internal static class Harness
             catch { blocked = true; }
             Check(blocked, "nonempty target was not blocked");
             Environment.SetEnvironmentVariable("MOCK_OBJECTS", "0");
-            OracleWork.CheckEmptyTarget(config, "TEST_EMPTY", delegate(string s) { });
-            string importLog = OracleWork.Restore(config, "DEMO_SCHEMA", "TEST_EMPTY", receivedDump, delegate(string s) { });
+            List<string> restoreLogs = new List<string>();
+            OracleWork.CheckEmptyTarget(config, "TEST_EMPTY", restoreLogs.Add);
+            string importLog = OracleWork.Restore(config, "DEMO_SCHEMA", "TEST_EMPTY", receivedDump, restoreLogs.Add);
             Check(File.Exists(importLog), "mock import log missing");
-            Console.WriteLine("PASS empty-target check, nonempty rejection and mocked safe import");
+            Check(restoreLogs.Contains("Mock SQL*Plus emitted ********") && restoreLogs.Contains("Mock Data Pump emitted ********") &&
+                  restoreLogs.TrueForAll(delegate(string s) { return !s.Contains(specialPassword); }),
+                  "restore output did not redact passwords");
+            Console.WriteLine("PASS empty-target check, nonempty rejection and special-character login for mocked import");
 
             using (TcpClient tcp = new TcpClient("127.0.0.1", port))
             using (Stream tls = ConnectRaw(tcp, keys))

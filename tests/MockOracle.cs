@@ -2,22 +2,33 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Text.RegularExpressions;
 
 internal static class MockOracle
 {
     private static int Main(string[] args)
     {
         string name = Path.GetFileNameWithoutExtension(Environment.GetCommandLineArgs()[0]).ToLowerInvariant();
+        string specialPassword = Environment.GetEnvironmentVariable("MOCK_SPECIAL_PASSWORD");
+        string password = specialPassword ?? "TEST_SECRET";
+        string loginPattern = @"\A[A-Z_]+/" +
+            Regex.Escape(specialPassword == null ? password : "\"" + password + "\"") +
+            @"@//127\.0\.0\.1:1521/TEST_ORCL2?\z";
+        if (args.Any(arg => arg.Contains(password))) return 15;
         if (name == "sqlplus")
         {
             string input = Console.In.ReadToEnd();
-            if (!input.Contains("CONNECT ") || !input.Contains("WHENEVER SQLERROR EXIT FAILURE")) return 4;
+            const string begin = "WHENEVER OSERROR EXIT FAILURE\r\nWHENEVER SQLERROR EXIT FAILURE\r\n" +
+                "SET DEFINE OFF\r\nCONNECT ";
+            if (!input.StartsWith(begin, StringComparison.Ordinal)) return 4;
+            int end = input.IndexOf("\r\n", begin.Length, StringComparison.Ordinal);
+            if (end < 0 || !Regex.IsMatch(input.Substring(begin.Length, end - begin.Length), loginPattern)) return 15;
+            Console.WriteLine("Mock SQL*Plus emitted " + password);
             if (input.Contains("ALL_DIRECTORIES"))
             {
                 if (!input.Contains("OBM_DIRECTORY_PATH=") || !input.Contains("ORACLE_BACKUP_DIR") ||
                     !input.Contains("SYS_CONTEXT('USERENV','SERVER_HOST')")) return 11;
                 string mode = Environment.GetEnvironmentVariable("MOCK_DIRECTORY_MODE") ?? "match";
-                Console.WriteLine("Mock query emitted TEST_SECRET");
                 if (mode == "sqlerror")
                 {
                     Console.WriteLine("ORA-01031: insufficient privileges");
@@ -61,6 +72,8 @@ internal static class MockOracle
             return 4;
         }
         if (args.Length != 1 || !args[0].StartsWith("parfile=")) return 5;
+        string login = Console.In.ReadLine();
+        if (login == null || !Regex.IsMatch(login, loginPattern) || Console.In.ReadLine() != null) return 15;
         string path = args[0].Substring("parfile=".Length).Trim('"');
         if (!File.Exists(path)) return 6;
         Dictionary<string, string> values = new Dictionary<string, string>();
@@ -69,7 +82,7 @@ internal static class MockOracle
             int pos = line.IndexOf('=');
             if (pos > 0) values[line.Substring(0, pos)] = line.Substring(pos + 1);
         }
-        if (!values.ContainsKey("USERID") || !values.ContainsKey("DIRECTORY") ||
+        if (values.ContainsKey("USERID") || !values.ContainsKey("DIRECTORY") ||
             !values.ContainsKey("DUMPFILE") || !values.ContainsKey("LOGFILE")) return 7;
         string dir = Environment.GetEnvironmentVariable("MOCK_STAGING");
         string dump = Path.Combine(dir, values["DUMPFILE"]);
@@ -100,7 +113,7 @@ internal static class MockOracle
             File.WriteAllText(Path.Combine(dir, values["LOGFILE"]), "MOCK IMPORT LOG");
         }
         else return 10;
-        Console.WriteLine("Mock tool emitted TEST_SECRET");
+        Console.WriteLine("Mock Data Pump emitted " + password);
         return 0;
     }
 }

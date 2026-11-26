@@ -57,7 +57,7 @@ internal static class Wire
     internal const byte UploadVerified = 4, ListAll = 5, DownloadSevenZip = 3, Verifying = 2;
     internal static readonly byte[] Magic = Encoding.ASCII.GetBytes("OBK2026!");
     internal static readonly Regex IdPattern = new Regex(@"^[A-Z0-9_]{8,90}\z");
-    internal static readonly Regex SchemaPattern = new Regex(@"^[A-Z][A-Z0-9_$#]{0,29}$");
+    internal static readonly Regex SchemaPattern = new Regex(@"\A[A-Z][A-Z0-9_$#]{0,29}\z");
 
     internal static bool IsSevenZip(string id) { return id.EndsWith(SevenZipSuffix, StringComparison.Ordinal); }
     internal static bool IsLegacyZip(string id) { return id.EndsWith("_Z1", StringComparison.Ordinal); }
